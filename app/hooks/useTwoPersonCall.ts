@@ -14,8 +14,8 @@ type CallPhase =
 export type Role = "host" | "guest" | null;
 
 export interface UseTwoPersonCallResult {
-  localVideoRef: React.RefObject<HTMLVideoElement>;
-  remoteVideoRef: React.RefObject<HTMLVideoElement>;
+  localVideoRef: React.RefObject<HTMLVideoElement | null>;
+  remoteVideoRef: React.RefObject<HTMLVideoElement | null>;
   role: Role;
   phase: CallPhase;
   error: string | null;

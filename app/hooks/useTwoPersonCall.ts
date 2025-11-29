@@ -369,7 +369,31 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
           return;
         }
 
-        const offer: RTCSessionDescriptionInit = JSON.parse(remoteOffer);
+        let offer: RTCSessionDescriptionInit;
+        try {
+          // Try to parse the JSON, handling potential whitespace or formatting issues
+          let cleaned = remoteOffer.trim();
+          
+          // Remove any potential BOM or invisible characters
+          cleaned = cleaned.replace(/^\uFEFF/, '');
+          
+          // Try to extract JSON if there's extra text around it
+          const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            cleaned = jsonMatch[0];
+          }
+          
+          offer = JSON.parse(cleaned);
+        } catch (parseError) {
+          console.error("Failed to parse remote offer JSON:", parseError);
+          console.error("Input length:", remoteOffer.length);
+          console.error("Input preview:", remoteOffer.substring(0, 200));
+          if (remoteOffer.length > 200) {
+            console.error("Input end:", remoteOffer.substring(remoteOffer.length - 200));
+          }
+          setError(`Invalid connection data format. Error: ${parseError instanceof Error ? parseError.message : 'Unknown error'}. Please check that you copied the complete offer without any extra text.`);
+          return;
+        }
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
         const answer = await pc.createAnswer();
@@ -428,7 +452,31 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
           return;
         }
 
-        const answer: RTCSessionDescriptionInit = JSON.parse(remoteAnswer);
+        let answer: RTCSessionDescriptionInit;
+        try {
+          // Try to parse the JSON, handling potential whitespace or formatting issues
+          let cleaned = remoteAnswer.trim();
+          
+          // Remove any potential BOM or invisible characters
+          cleaned = cleaned.replace(/^\uFEFF/, '');
+          
+          // Try to extract JSON if there's extra text around it
+          const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            cleaned = jsonMatch[0];
+          }
+          
+          answer = JSON.parse(cleaned);
+        } catch (parseError) {
+          console.error("Failed to parse remote answer JSON:", parseError);
+          console.error("Input length:", remoteAnswer.length);
+          console.error("Input preview:", remoteAnswer.substring(0, 200));
+          if (remoteAnswer.length > 200) {
+            console.error("Input end:", remoteAnswer.substring(remoteAnswer.length - 200));
+          }
+          setError(`Invalid connection data format. Error: ${parseError instanceof Error ? parseError.message : 'Unknown error'}. Please check that you copied the complete response without any extra text.`);
+          return;
+        }
         
         // Check the signaling state - we should be in "have-local-offer" state
         if (pc.signalingState !== "have-local-offer") {

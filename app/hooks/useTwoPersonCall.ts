@@ -13,6 +13,12 @@ type CallPhase =
 
 export type Role = "host" | "guest" | null;
 
+export interface MediaDevice {
+  deviceId: string;
+  label: string;
+  kind: MediaDeviceKind;
+}
+
 export interface UseTwoPersonCallResult {
   localVideoRef: React.RefObject<HTMLVideoElement | null>;
   remoteVideoRef: React.RefObject<HTMLVideoElement | null>;
@@ -23,14 +29,28 @@ export interface UseTwoPersonCallResult {
   offerPayload: string;
   answerPayload: string;
   captionsSupported: boolean;
+  captionsEnabled: boolean;
   captionsLanguage: string;
   localCaption: string;
   remoteCaption: string;
   remoteCaptionTranslated: string;
   translationLanguage: string;
   isTranslating: boolean;
+  // Audio/Video controls
+  microphones: MediaDevice[];
+  speakers: MediaDevice[];
+  selectedMicrophoneId: string | null;
+  selectedSpeakerId: string | null;
+  isMicrophoneMuted: boolean;
+  isSpeakerMuted: boolean;
   setCaptionsLanguage: (languageCode: string) => void;
   setTranslationLanguage: (languageCode: string) => void;
+  toggleCaptions: () => void;
+  setMicrophone: (deviceId: string) => Promise<void>;
+  setSpeaker: (deviceId: string) => Promise<void>;
+  toggleMicrophone: () => void;
+  toggleSpeaker: () => void;
+  refreshDevices: () => Promise<void>;
   startAsHost: () => Promise<void>;
   startAsGuest: () => Promise<void>;
   createOffer: () => Promise<void>;
@@ -60,6 +80,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   const [offerPayload, setOfferPayload] = useState("");
   const [answerPayload, setAnswerPayload] = useState("");
   const [captionsSupported, setCaptionsSupported] = useState(false);
+  const [captionsEnabled, setCaptionsEnabled] = useState(true);
   const [captionsLanguage, setCaptionsLanguage] = useState("en-US");
   const [localCaption, setLocalCaption] = useState("");
   const [remoteCaption, setRemoteCaption] = useState("");
@@ -67,8 +88,17 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   const [translationLanguage, setTranslationLanguage] = useState<LanguageCode>("en");
   const [isTranslating, setIsTranslating] = useState(false);
   
+  // Audio/Video device state
+  const [microphones, setMicrophones] = useState<MediaDevice[]>([]);
+  const [speakers, setSpeakers] = useState<MediaDevice[]>([]);
+  const [selectedMicrophoneId, setSelectedMicrophoneId] = useState<string | null>(null);
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState<string | null>(null);
+  const [isMicrophoneMuted, setIsMicrophoneMuted] = useState(false);
+  const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
+  
   const remoteCaptionLanguageRef = useRef<string>("en-US");
   const translationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const audioTrackRef = useRef<MediaStreamTrack | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -212,24 +242,73 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     }
 
     return pc;
-  }, []);
+  }, [isSpeakerMuted]);
+
+  // Enumerate available audio devices
+  const enumerateDevices = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices
+        .filter((d) => d.kind === "audioinput")
+        .map((d) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Microphone ${d.deviceId.slice(0, 8)}`,
+          kind: d.kind as MediaDeviceKind,
+        }));
+      const spkrs = devices
+        .filter((d) => d.kind === "audiooutput")
+        .map((d) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Speaker ${d.deviceId.slice(0, 8)}`,
+          kind: d.kind as MediaDeviceKind,
+        }));
+      
+      setMicrophones(mics);
+      setSpeakers(spkrs);
+      
+      // Set default if not already selected
+      if (!selectedMicrophoneId && mics.length > 0) {
+        setSelectedMicrophoneId(mics[0].deviceId);
+      }
+      if (!selectedSpeakerId && spkrs.length > 0) {
+        setSelectedSpeakerId(spkrs[0].deviceId);
+      }
+    } catch (err) {
+      console.error("Failed to enumerate devices:", err);
+    }
+  }, [selectedMicrophoneId, selectedSpeakerId]);
 
   const startLocalMedia = useCallback(async () => {
     if (localStreamRef.current) {
       setPhase("media-ready");
+      // Refresh device list when media is already available
+      await enumerateDevices();
       return;
     }
 
     try {
       setIsBusy(true);
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const constraints: MediaStreamConstraints = {
         video: true,
-        audio: true,
-      });
+        audio: selectedMicrophoneId ? { deviceId: { exact: selectedMicrophoneId } } : true,
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
+      
+      // Store audio track reference for mute control
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length > 0) {
+        audioTrackRef.current = audioTracks[0];
+      }
+      
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+      
+      // Enumerate devices after getting permission
+      await enumerateDevices();
+      
       setPhase("media-ready");
     } catch (err) {
       console.error(err);
@@ -239,7 +318,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     } finally {
       setIsBusy(false);
     }
-  }, []);
+  }, [selectedMicrophoneId, enumerateDevices]);
 
   const startAsHost = useCallback(async () => {
     setRole("host");
@@ -554,6 +633,90 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     setTranslationLanguage(languageCode as LanguageCode);
   }, []);
 
+  // Toggle captions on/off
+  const toggleCaptions = useCallback(() => {
+    setCaptionsEnabled((prev) => !prev);
+  }, []);
+
+  // Set microphone device
+  const setMicrophone = useCallback(async (deviceId: string) => {
+    if (!localStreamRef.current) {
+      setSelectedMicrophoneId(deviceId);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: localStreamRef.current.getVideoTracks()[0]?.getSettings().deviceId },
+        audio: { deviceId: { exact: deviceId } },
+      });
+
+      // Replace audio track
+      const newAudioTrack = stream.getAudioTracks()[0];
+      const oldAudioTrack = localStreamRef.current.getAudioTracks()[0];
+      
+      if (oldAudioTrack && newAudioTrack) {
+        localStreamRef.current.removeTrack(oldAudioTrack);
+        localStreamRef.current.addTrack(newAudioTrack);
+        oldAudioTrack.stop();
+        
+        // Update peer connection
+        const pc = pcRef.current;
+        if (pc) {
+          const sender = pc.getSenders().find((s) => s.track === oldAudioTrack);
+          if (sender) {
+            await sender.replaceTrack(newAudioTrack);
+          }
+        }
+        
+        audioTrackRef.current = newAudioTrack;
+      }
+
+      setSelectedMicrophoneId(deviceId);
+      stream.getVideoTracks().forEach((track) => track.stop());
+    } catch (err) {
+      console.error("Failed to switch microphone:", err);
+      setError("Failed to switch microphone. Please try again.");
+    }
+  }, []);
+
+  // Set speaker device
+  const setSpeaker = useCallback(async (deviceId: string) => {
+    setSelectedSpeakerId(deviceId);
+    
+    // Apply speaker selection to remote video element
+    if (remoteVideoRef.current && 'setSinkId' in remoteVideoRef.current) {
+      try {
+        await (remoteVideoRef.current as HTMLVideoElement & { setSinkId: (id: string) => Promise<void> }).setSinkId(deviceId);
+      } catch (err) {
+        console.error("Failed to set speaker:", err);
+      }
+    }
+  }, []);
+
+  // Toggle microphone mute
+  const toggleMicrophone = useCallback(() => {
+    if (audioTrackRef.current) {
+      const newMutedState = !isMicrophoneMuted;
+      audioTrackRef.current.enabled = !newMutedState;
+      setIsMicrophoneMuted(newMutedState);
+    }
+  }, [isMicrophoneMuted]);
+
+  // Toggle speaker mute
+  const toggleSpeaker = useCallback(() => {
+    const newMutedState = !isSpeakerMuted;
+    setIsSpeakerMuted(newMutedState);
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.muted = newMutedState;
+    }
+  }, [isSpeakerMuted]);
+
+  // Refresh device list
+  const refreshDevices = useCallback(async () => {
+    await enumerateDevices();
+  }, [enumerateDevices]);
+
   const hangUp = useCallback(() => {
     cleanupPeerConnection();
     resetState();
@@ -784,7 +947,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     } else {
       stopRecognition();
     }
-  }, [captionsSupported, captionsLanguage, phase, stopRecognition]);
+  }, [captionsSupported, captionsEnabled, captionsLanguage, phase, stopRecognition]);
 
   return {
     localVideoRef,
@@ -796,14 +959,27 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     offerPayload,
     answerPayload,
     captionsSupported,
+    captionsEnabled,
     captionsLanguage,
     localCaption,
     remoteCaption,
     remoteCaptionTranslated,
     translationLanguage,
     isTranslating,
+    microphones,
+    speakers,
+    selectedMicrophoneId,
+    selectedSpeakerId,
+    isMicrophoneMuted,
+    isSpeakerMuted,
     setCaptionsLanguage,
     setTranslationLanguage: handleSetTranslationLanguage,
+    toggleCaptions,
+    setMicrophone,
+    setSpeaker,
+    toggleMicrophone,
+    toggleSpeaker,
+    refreshDevices,
     startAsHost,
     startAsGuest,
     createOffer,

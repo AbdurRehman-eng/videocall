@@ -142,45 +142,156 @@ export default function Home() {
             </div>
           </div>
 
-          {captionsSupported ? (
+          {/* Audio Controls */}
+          {(role && (phase === "media-ready" || phase === "waiting-offer" || phase === "waiting-answer" || phase === "connected")) && (
             <div className="mb-4 rounded-2xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 space-y-3">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <p className="text-[11px] font-semibold tracking-wide text-zinc-400 uppercase">
-                  Live Captions
+                  Audio Controls
                 </p>
-                <div className="flex items-center gap-2 text-[11px] text-zinc-500 flex-wrap">
-                  <div className="flex items-center gap-1">
-                    <span className="hidden sm:inline">Speech:</span>
-                    <select
-                      className="h-7 rounded-full bg-zinc-900 border border-zinc-700 px-2 text-[11px] outline-none"
-                      value={captionsLanguage}
-                      onChange={(e) => setCaptionsLanguage(e.target.value)}
+                <button
+                  type="button"
+                  onClick={refreshDevices}
+                  className="text-[10px] px-2 py-1 rounded-full bg-zinc-900 border border-zinc-700 hover:bg-zinc-800 text-zinc-400"
+                  title="Refresh device list"
+                >
+                  🔄 Refresh
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Microphone Control */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] text-zinc-500 uppercase tracking-wide">
+                      Microphone
+                    </label>
+                    <button
+                      type="button"
+                      onClick={toggleMicrophone}
+                      className={`h-6 w-6 rounded-full flex items-center justify-center text-xs transition ${
+                        isMicrophoneMuted
+                          ? "bg-red-500/20 border border-red-500/50 text-red-400"
+                          : "bg-green-500/20 border border-green-500/50 text-green-400"
+                      }`}
+                      title={isMicrophoneMuted ? "Unmute microphone" : "Mute microphone"}
                     >
-                      <option value="en-US">English (US)</option>
-                    </select>
+                      {isMicrophoneMuted ? "🔇" : "🎤"}
+                    </button>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <span className="hidden sm:inline">Translate:</span>
+                  {microphones.length > 0 ? (
                     <select
-                      className="h-7 rounded-full bg-zinc-900 border border-zinc-700 px-2 text-[11px] outline-none"
-                      value={translationLanguage}
-                      onChange={(e) => setTranslationLanguage(e.target.value)}
-                      disabled={isTranslating}
+                      className="w-full h-8 rounded-lg bg-zinc-900 border border-zinc-700 px-2 text-[11px] outline-none focus:ring-1 focus:ring-orange-500/50"
+                      value={selectedMicrophoneId || ""}
+                      onChange={(e) => setMicrophone(e.target.value)}
+                      disabled={isBusy}
                     >
-                      <option value="en">Original</option>
-                      {SUPPORTED_LANGUAGES.map((lang) => (
-                        <option key={lang.code} value={lang.code}>
-                          {lang.name}
+                      {microphones.map((mic) => (
+                        <option key={mic.deviceId} value={mic.deviceId}>
+                          {mic.label}
                         </option>
                       ))}
                     </select>
-                    {isTranslating && (
-                      <span className="text-[10px] text-orange-500">Translating...</span>
-                    )}
+                  ) : (
+                    <p className="text-[10px] text-zinc-500">No microphones found</p>
+                  )}
+                </div>
+                
+                {/* Speaker Control */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] text-zinc-500 uppercase tracking-wide">
+                      Speaker
+                    </label>
+                    <button
+                      type="button"
+                      onClick={toggleSpeaker}
+                      className={`h-6 w-6 rounded-full flex items-center justify-center text-xs transition ${
+                        isSpeakerMuted
+                          ? "bg-red-500/20 border border-red-500/50 text-red-400"
+                          : "bg-green-500/20 border border-green-500/50 text-green-400"
+                      }`}
+                      title={isSpeakerMuted ? "Unmute speaker" : "Mute speaker"}
+                    >
+                      {isSpeakerMuted ? "🔇" : "🔊"}
+                    </button>
                   </div>
+                  {speakers.length > 0 ? (
+                    <select
+                      className="w-full h-8 rounded-lg bg-zinc-900 border border-zinc-700 px-2 text-[11px] outline-none focus:ring-1 focus:ring-orange-500/50"
+                      value={selectedSpeakerId || ""}
+                      onChange={(e) => setSpeaker(e.target.value)}
+                      disabled={isBusy}
+                    >
+                      {speakers.map((speaker) => (
+                        <option key={speaker.deviceId} value={speaker.deviceId}>
+                          {speaker.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-[10px] text-zinc-500">No speakers found</p>
+                  )}
                 </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] leading-snug">
+            </div>
+          )}
+
+          {captionsSupported ? (
+            <div className="mb-4 rounded-2xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <p className="text-[11px] font-semibold tracking-wide text-zinc-400 uppercase">
+                    Live Captions
+                  </p>
+                  <button
+                    type="button"
+                    onClick={toggleCaptions}
+                    className={`h-5 w-10 rounded-full flex items-center transition ${
+                      captionsEnabled
+                        ? "bg-orange-500/50 justify-end pr-1"
+                        : "bg-zinc-700 justify-start pl-1"
+                    }`}
+                    title={captionsEnabled ? "Disable captions" : "Enable captions"}
+                  >
+                    <span className="h-3 w-3 rounded-full bg-white" />
+                  </button>
+                </div>
+                {captionsEnabled && (
+                  <div className="flex items-center gap-2 text-[11px] text-zinc-500 flex-wrap">
+                    <div className="flex items-center gap-1">
+                      <span className="hidden sm:inline">Speech:</span>
+                      <select
+                        className="h-7 rounded-full bg-zinc-900 border border-zinc-700 px-2 text-[11px] outline-none"
+                        value={captionsLanguage}
+                        onChange={(e) => setCaptionsLanguage(e.target.value)}
+                      >
+                        <option value="en-US">English (US)</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="hidden sm:inline">Translate:</span>
+                      <select
+                        className="h-7 rounded-full bg-zinc-900 border border-zinc-700 px-2 text-[11px] outline-none"
+                        value={translationLanguage}
+                        onChange={(e) => setTranslationLanguage(e.target.value)}
+                        disabled={isTranslating}
+                      >
+                        <option value="en">Original</option>
+                        {SUPPORTED_LANGUAGES.map((lang) => (
+                          <option key={lang.code} value={lang.code}>
+                            {lang.name}
+                          </option>
+                        ))}
+                      </select>
+                      {isTranslating && (
+                        <span className="text-[10px] text-orange-500">Translating...</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {captionsEnabled && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] leading-snug">
                 <div className="rounded-xl bg-black/40 border border-zinc-800 px-3 py-2">
                   <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-500">
                     You
@@ -216,6 +327,7 @@ export default function Home() {
                   )}
                 </div>
               </div>
+              )}
             </div>
           ) : (
             <div className="mb-4 rounded-2xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 text-[11px] text-zinc-500">

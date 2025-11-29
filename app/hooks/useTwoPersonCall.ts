@@ -21,6 +21,11 @@ export interface UseTwoPersonCallResult {
   isBusy: boolean;
   offerPayload: string;
   answerPayload: string;
+  captionsSupported: boolean;
+  captionsLanguage: string;
+  localCaption: string;
+  remoteCaption: string;
+  setCaptionsLanguage: (languageCode: string) => void;
   startAsHost: () => Promise<void>;
   startAsGuest: () => Promise<void>;
   createOffer: () => Promise<void>;
@@ -35,6 +40,13 @@ const iceServers: RTCIceServer[] = [
   },
 ];
 
+type CaptionPayload = {
+  kind: "caption";
+  text: string;
+  language: string;
+  timestamp: number;
+};
+
 export function useTwoPersonCall(): UseTwoPersonCallResult {
   const [role, setRole] = useState<Role>(null);
   const [phase, setPhase] = useState<CallPhase>("idle");
@@ -42,12 +54,33 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   const [isBusy, setIsBusy] = useState(false);
   const [offerPayload, setOfferPayload] = useState("");
   const [answerPayload, setAnswerPayload] = useState("");
+  const [captionsSupported, setCaptionsSupported] = useState(false);
+  const [captionsLanguage, setCaptionsLanguage] = useState("en-US");
+  const [localCaption, setLocalCaption] = useState("");
+  const [remoteCaption, setRemoteCaption] = useState("");
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  const stopRecognition = useCallback(() => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+      recognitionRef.current = null;
+    }
+    setLocalCaption("");
+  }, []);
 
   const resetState = useCallback(() => {
     setPhase("idle");
@@ -56,6 +89,8 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     setIsBusy(false);
     setOfferPayload("");
     setAnswerPayload("");
+    setLocalCaption("");
+    setRemoteCaption("");
   }, []);
 
   const cleanupPeerConnection = useCallback(() => {
@@ -78,7 +113,10 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-  }, []);
+
+    dataChannelRef.current = null;
+    stopRecognition();
+  }, [stopRecognition]);
 
   const ensurePeerConnection = useCallback(() => {
     if (pcRef.current) return pcRef.current;
@@ -106,6 +144,30 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     };
 
     pcRef.current = pc;
+
+    // Data channel for captions: host will create it explicitly, guest will
+    // receive it via the ondatachannel handler below.
+    if (role === "host" && !dataChannelRef.current) {
+      const channel = pc.createDataChannel("captions");
+      dataChannelRef.current = channel;
+    }
+
+    pc.ondatachannel = (event) => {
+      if (event.channel.label !== "captions") return;
+      const channel = event.channel;
+      dataChannelRef.current = channel;
+
+      channel.onmessage = (ev) => {
+        try {
+          const payload = JSON.parse(String(ev.data)) as CaptionPayload;
+          if (payload.kind === "caption") {
+            setRemoteCaption(payload.text);
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      };
+    };
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
@@ -276,6 +338,83 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     };
   }, [cleanupPeerConnection]);
 
+   // Detect browser support for speech recognition (Web Speech API).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const SpeechRecognitionCtor =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      setCaptionsSupported(false);
+      return;
+    }
+    setCaptionsSupported(true);
+  }, []);
+
+  // Start / stop speech recognition when connected and supported.
+  useEffect(() => {
+    if (!captionsSupported || typeof window === "undefined") {
+      return;
+    }
+
+    const SpeechRecognitionCtor =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionCtor) return;
+
+    if (phase === "connected") {
+      if (recognitionRef.current) return;
+
+      const recognition: SpeechRecognition = new SpeechRecognitionCtor();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = captionsLanguage;
+
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let latest = "";
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const result = event.results[i];
+          latest = result[0].transcript.trim();
+        }
+        if (!latest) return;
+
+        setLocalCaption(latest);
+
+        // Send only finalized phrases to the remote side.
+        const lastResult = event.results[event.results.length - 1];
+        if (lastResult && lastResult.isFinal && dataChannelRef.current) {
+          const payload: CaptionPayload = {
+            kind: "caption",
+            text: latest,
+            language: captionsLanguage,
+            timestamp: Date.now(),
+          };
+          try {
+            dataChannelRef.current.send(JSON.stringify(payload));
+          } catch {
+            // ignore transient send errors
+          }
+        }
+      };
+
+      recognition.onerror = () => {
+        // Do not crash the call if captions fail; simply stop.
+        stopRecognition();
+      };
+
+      recognition.onend = () => {
+        // Restart automatically while connected for robustness.
+        if (phase === "connected") {
+          recognitionRef.current = null;
+        }
+      };
+
+      recognition.start();
+      recognitionRef.current = recognition;
+    } else {
+      stopRecognition();
+    }
+  }, [captionsSupported, captionsLanguage, phase, stopRecognition]);
+
   return {
     localVideoRef,
     remoteVideoRef,
@@ -285,6 +424,11 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     isBusy,
     offerPayload,
     answerPayload,
+    captionsSupported,
+    captionsLanguage,
+    localCaption,
+    remoteCaption,
+    setCaptionsLanguage,
     startAsHost,
     startAsGuest,
     createOffer,

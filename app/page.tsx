@@ -13,6 +13,11 @@ export default function Home() {
     isBusy,
     offerPayload,
     answerPayload,
+    captionsSupported,
+    captionsLanguage,
+    localCaption,
+    remoteCaption,
+    setCaptionsLanguage,
     startAsHost,
     startAsGuest,
     createOffer,
@@ -118,6 +123,48 @@ export default function Home() {
               </div>
             </div>
           </div>
+
+          {captionsSupported ? (
+            <div className="mb-4 rounded-2xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold tracking-wide text-zinc-400 uppercase">
+                  Live Captions
+                </p>
+                <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+                  <span className="hidden sm:inline">Language</span>
+                  <select
+                    className="h-7 rounded-full bg-zinc-900 border border-zinc-700 px-2 text-[11px] outline-none"
+                    value={captionsLanguage}
+                    onChange={(e) => setCaptionsLanguage(e.target.value)}
+                  >
+                    <option value="en-US">English (US)</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] leading-snug">
+                <div className="rounded-xl bg-black/40 border border-zinc-800 px-3 py-2">
+                  <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-500">
+                    You
+                  </div>
+                  <p className="text-zinc-200 min-h-[1.5em] break-words">
+                    {localCaption || "Your words will appear here as you speak."}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-black/40 border border-zinc-800 px-3 py-2">
+                  <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-500">
+                    Guest
+                  </div>
+                  <p className="text-zinc-200 min-h-[1.5em] break-words">
+                    {remoteCaption || "Guest captions will appear here when they speak."}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="mb-4 rounded-2xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 text-[11px] text-zinc-500">
+              Live captions are not supported in this browser. Try Chrome or Edge to enable them.
+            </div>
+          )}
 
           <div className="space-y-4">
             {!role && (

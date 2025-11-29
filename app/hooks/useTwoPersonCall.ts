@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { translateText, type LanguageCode } from "../utils/translation";
 
 type CallPhase =
   | "idle"
@@ -25,7 +26,11 @@ export interface UseTwoPersonCallResult {
   captionsLanguage: string;
   localCaption: string;
   remoteCaption: string;
+  remoteCaptionTranslated: string;
+  translationLanguage: string;
+  isTranslating: boolean;
   setCaptionsLanguage: (languageCode: string) => void;
+  setTranslationLanguage: (languageCode: string) => void;
   startAsHost: () => Promise<void>;
   startAsGuest: () => Promise<void>;
   createOffer: () => Promise<void>;
@@ -58,6 +63,12 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   const [captionsLanguage, setCaptionsLanguage] = useState("en-US");
   const [localCaption, setLocalCaption] = useState("");
   const [remoteCaption, setRemoteCaption] = useState("");
+  const [remoteCaptionTranslated, setRemoteCaptionTranslated] = useState("");
+  const [translationLanguage, setTranslationLanguage] = useState<LanguageCode>("en");
+  const [isTranslating, setIsTranslating] = useState(false);
+  
+  const remoteCaptionLanguageRef = useRef<string>("en-US");
+  const translationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -93,6 +104,12 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     setAnswerPayload("");
     setLocalCaption("");
     setRemoteCaption("");
+    setRemoteCaptionTranslated("");
+    remoteCaptionLanguageRef.current = "en-US";
+    if (translationTimeoutRef.current) {
+      clearTimeout(translationTimeoutRef.current);
+      translationTimeoutRef.current = null;
+    }
   }, []);
 
   const cleanupPeerConnection = useCallback(() => {
@@ -170,6 +187,13 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
           const payload = JSON.parse(String(ev.data)) as CaptionPayload;
           if (payload.kind === "caption") {
             setRemoteCaption(payload.text);
+            remoteCaptionLanguageRef.current = payload.language;
+            // Trigger translation if enabled
+            if (translationLanguage && translationLanguage !== "en") {
+              translateRemoteCaption(payload.text, payload.language);
+            } else {
+              setRemoteCaptionTranslated("");
+            }
           }
         } catch {
           // ignore malformed messages
@@ -282,6 +306,13 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
             const payload = JSON.parse(String(ev.data)) as CaptionPayload;
             if (payload.kind === "caption") {
               setRemoteCaption(payload.text);
+              remoteCaptionLanguageRef.current = payload.language;
+              // Trigger translation if enabled
+              if (translationLanguage && translationLanguage !== "en") {
+                translateRemoteCaption(payload.text, payload.language);
+              } else {
+                setRemoteCaptionTranslated("");
+              }
             }
           } catch {
             // ignore malformed messages
@@ -428,6 +459,52 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     },
     [ensurePeerConnection, role],
   );
+
+  // Translate remote caption in real-time
+  const translateRemoteCaption = useCallback(
+    async (text: string, sourceLanguage: string) => {
+      if (!text.trim() || translationLanguage === "en") {
+        setRemoteCaptionTranslated("");
+        return;
+      }
+
+      // Debounce translation to avoid too many API calls
+      if (translationTimeoutRef.current) {
+        clearTimeout(translationTimeoutRef.current);
+      }
+
+      translationTimeoutRef.current = setTimeout(async () => {
+        setIsTranslating(true);
+        try {
+          const translated = await translateText(
+            text,
+            sourceLanguage,
+            translationLanguage,
+          );
+          setRemoteCaptionTranslated(translated);
+        } catch (error) {
+          console.error("Translation failed:", error);
+          setRemoteCaptionTranslated("");
+        } finally {
+          setIsTranslating(false);
+        }
+      }, 300); // 300ms debounce
+    },
+    [translationLanguage],
+  );
+
+  // Update translation when language changes
+  useEffect(() => {
+    if (remoteCaption && translationLanguage && translationLanguage !== "en") {
+      translateRemoteCaption(remoteCaption, remoteCaptionLanguageRef.current);
+    } else {
+      setRemoteCaptionTranslated("");
+    }
+  }, [translationLanguage, remoteCaption, translateRemoteCaption]);
+
+  const handleSetTranslationLanguage = useCallback((languageCode: string) => {
+    setTranslationLanguage(languageCode as LanguageCode);
+  }, []);
 
   const hangUp = useCallback(() => {
     cleanupPeerConnection();
@@ -674,7 +751,11 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     captionsLanguage,
     localCaption,
     remoteCaption,
+    remoteCaptionTranslated,
+    translationLanguage,
+    isTranslating,
     setCaptionsLanguage,
+    setTranslationLanguage: handleSetTranslationLanguage,
     startAsHost,
     startAsGuest,
     createOffer,

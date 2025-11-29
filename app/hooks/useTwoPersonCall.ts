@@ -1,10 +1,16 @@
-\"use client\";
+"use client";
 
-import { useCallback, useEffect, useRef, useState } from \"react\";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-type CallPhase = \"idle\" | \"media-ready\" | \"waiting-offer\" | \"waiting-answer\" | \"connected\" | \"ended\";
+type CallPhase =
+  | "idle"
+  | "media-ready"
+  | "waiting-offer"
+  | "waiting-answer"
+  | "connected"
+  | "ended";
 
-export type Role = \"host\" | \"guest\" | null;
+export type Role = "host" | "guest" | null;
 
 export interface UseTwoPersonCallResult {
   localVideoRef: React.RefObject<HTMLVideoElement>;
@@ -25,17 +31,17 @@ export interface UseTwoPersonCallResult {
 
 const iceServers: RTCIceServer[] = [
   {
-    urls: \"stun:stun.l.google.com:19302\",
+    urls: "stun:stun.l.google.com:19302",
   },
 ];
 
 export function useTwoPersonCall(): UseTwoPersonCallResult {
   const [role, setRole] = useState<Role>(null);
-  const [phase, setPhase] = useState<CallPhase>(\"idle\");
+  const [phase, setPhase] = useState<CallPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
-  const [offerPayload, setOfferPayload] = useState(\"\");
-  const [answerPayload, setAnswerPayload] = useState(\"\");
+  const [offerPayload, setOfferPayload] = useState("");
+  const [answerPayload, setAnswerPayload] = useState("");
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -44,12 +50,12 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   const localStreamRef = useRef<MediaStream | null>(null);
 
   const resetState = useCallback(() => {
-    setPhase(\"idle\");
+    setPhase("idle");
     setRole(null);
     setError(null);
     setIsBusy(false);
-    setOfferPayload(\"\");
-    setAnswerPayload(\"\");
+    setOfferPayload("");
+    setAnswerPayload("");
   }, []);
 
   const cleanupPeerConnection = useCallback(() => {
@@ -88,13 +94,15 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      if (state === \"disconnected\" || state === \"failed\" || state === \"closed\") {
-        setPhase(\"ended\");
+      if (state === "disconnected" || state === "failed" || state === "closed") {
+        setPhase("ended");
       }
     };
 
     pc.onicecandidateerror = () => {
-      setError(\"Network error while negotiating connection. Please check your network and try again.\");
+      setError(
+        "Network error while negotiating connection. Please check your network and try again.",
+      );
     };
 
     pcRef.current = pc;
@@ -110,7 +118,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
   const startLocalMedia = useCallback(async () => {
     if (localStreamRef.current) {
-      setPhase(\"media-ready\");
+      setPhase("media-ready");
       return;
     }
 
@@ -124,45 +132,47 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
-      setPhase(\"media-ready\");
+      setPhase("media-ready");
     } catch (err) {
       console.error(err);
-      setError(\"Unable to access camera or microphone. Please grant permissions and try again.\");
+      setError(
+        "Unable to access camera or microphone. Please grant permissions and try again.",
+      );
     } finally {
       setIsBusy(false);
     }
   }, []);
 
   const startAsHost = useCallback(async () => {
-    setRole(\"host\");
+    setRole("host");
     await startLocalMedia();
-    setPhase(\"waiting-offer\");
+    setPhase("waiting-offer");
   }, [startLocalMedia]);
 
   const startAsGuest = useCallback(async () => {
-    setRole(\"guest\");
+    setRole("guest");
     await startLocalMedia();
-    setPhase(\"waiting-offer\");
+    setPhase("waiting-offer");
   }, [startLocalMedia]);
 
   const waitForIceGatheringComplete = (pc: RTCPeerConnection) =>
     new Promise<void>((resolve) => {
-      if (pc.iceGatheringState === \"complete\") {
+      if (pc.iceGatheringState === "complete") {
         resolve();
         return;
       }
       const checkState = () => {
-        if (pc.iceGatheringState === \"complete\") {
-          pc.removeEventListener(\"icegatheringstatechange\", checkState);
+        if (pc.iceGatheringState === "complete") {
+          pc.removeEventListener("icegatheringstatechange", checkState);
           resolve();
         }
       };
-      pc.addEventListener(\"icegatheringstatechange\", checkState);
+      pc.addEventListener("icegatheringstatechange", checkState);
     });
 
   const createOffer = useCallback(async () => {
-    if (role !== \"host\") {
-      setError(\"Only the host can create an offer.\");
+    if (role !== "host") {
+      setError("Only the host can create an offer.");
       return;
     }
 
@@ -192,7 +202,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
       }
     } catch (err) {
       console.error(err);
-      setError(\"Failed to create offer. Please refresh and try again.\");
+      setError("Failed to create offer. Please refresh and try again.");
     } finally {
       setIsBusy(false);
     }
@@ -200,8 +210,8 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
   const applyRemoteOfferAndCreateAnswer = useCallback(
     async (remoteOffer: string) => {
-      if (role !== \"guest\") {
-        setError(\"Only the guest can use a host's connection code.\");
+      if (role !== "guest") {
+        setError("Only the guest can use a host's connection code.");
         return;
       }
 
@@ -221,10 +231,10 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
           setAnswerPayload(JSON.stringify(withIce));
         }
 
-        setPhase(\"waiting-answer\");
+        setPhase("waiting-answer");
       } catch (err) {
         console.error(err);
-        setError(\"The connection code looks invalid. Please check and try again.\");
+        setError("The connection code looks invalid. Please check and try again.");
       } finally {
         setIsBusy(false);
       }
@@ -234,8 +244,8 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
   const applyRemoteAnswer = useCallback(
     async (remoteAnswer: string) => {
-      if (role !== \"host\") {
-        setError(\"Only the host can apply a guest's response code.\");
+      if (role !== "host") {
+        setError("Only the host can apply a guest's response code.");
         return;
       }
 
@@ -244,10 +254,10 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
         const pc = ensurePeerConnection();
         const answer: RTCSessionDescriptionInit = JSON.parse(remoteAnswer);
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
-        setPhase(\"connected\");
+        setPhase("connected");
       } catch (err) {
         console.error(err);
-        setError(\"The response code looks invalid. Please check and try again.\");
+        setError("The response code looks invalid. Please check and try again.");
       } finally {
         setIsBusy(false);
       }
@@ -283,5 +293,4 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     hangUp,
   };
 }
-
 

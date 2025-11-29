@@ -66,6 +66,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   const localStreamRef = useRef<MediaStream | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const roleRef = useRef<Role>(null);
 
   const stopRecognition = useCallback(() => {
     if (recognitionRef.current) {
@@ -85,6 +86,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   const resetState = useCallback(() => {
     setPhase("idle");
     setRole(null);
+    roleRef.current = null;
     setError(null);
     setIsBusy(false);
     setOfferPayload("");
@@ -153,7 +155,11 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     pc.ondatachannel = (event) => {
       if (event.channel.label !== "captions") return;
       const channel = event.channel;
-      dataChannelRef.current = channel;
+      
+      // Only set if we don't already have a data channel (guest receives it)
+      if (!dataChannelRef.current) {
+        dataChannelRef.current = channel;
+      }
 
       channel.onopen = () => {
         console.log("Data channel opened (guest)");
@@ -213,12 +219,14 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
   const startAsHost = useCallback(async () => {
     setRole("host");
+    roleRef.current = "host";
     await startLocalMedia();
     setPhase("waiting-offer");
   }, [startLocalMedia]);
 
   const startAsGuest = useCallback(async () => {
     setRole("guest");
+    roleRef.current = "guest";
     await startLocalMedia();
     setPhase("waiting-offer");
   }, [startLocalMedia]);
@@ -267,6 +275,17 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
         
         channel.onopen = () => {
           console.log("Data channel opened (host)");
+        };
+        
+        channel.onmessage = (ev) => {
+          try {
+            const payload = JSON.parse(String(ev.data)) as CaptionPayload;
+            if (payload.kind === "caption") {
+              setRemoteCaption(payload.text);
+            }
+          } catch {
+            // ignore malformed messages
+          }
         };
         
         channel.onerror = (err) => {
@@ -472,22 +491,44 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
         // Send only finalized phrases to the remote side.
         const lastResult = event.results[event.results.length - 1];
         if (lastResult && lastResult.isFinal) {
-          if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
-            const payload: CaptionPayload = {
-              kind: "caption",
-              text: latest,
-              language: captionsLanguage,
-              timestamp: Date.now(),
-            };
-            try {
-              dataChannelRef.current.send(JSON.stringify(payload));
-              console.log("Sent caption:", latest);
-            } catch (err) {
-              console.error("Failed to send caption:", err);
+          // Wait a bit for data channel to be ready if not immediately available
+          const sendCaption = () => {
+            if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
+              const payload: CaptionPayload = {
+                kind: "caption",
+                text: latest,
+                language: captionsLanguage,
+                timestamp: Date.now(),
+              };
+              try {
+                dataChannelRef.current.send(JSON.stringify(payload));
+                console.log(`Sent caption (${roleRef.current}):`, latest);
+              } catch (err) {
+                console.error("Failed to send caption:", err);
+              }
+            } else {
+              // Retry after a short delay if channel not ready yet
+              setTimeout(() => {
+                if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
+                  const payload: CaptionPayload = {
+                    kind: "caption",
+                    text: latest,
+                    language: captionsLanguage,
+                    timestamp: Date.now(),
+                  };
+                  try {
+                    dataChannelRef.current.send(JSON.stringify(payload));
+                    console.log(`Sent caption (${roleRef.current}, retry):`, latest);
+                  } catch (err) {
+                    console.error("Failed to send caption on retry:", err);
+                  }
+                } else {
+                  console.warn(`Data channel not ready (${roleRef.current}), caption not sent:`, latest);
+                }
+              }, 500);
             }
-          } else {
-            console.warn("Data channel not ready, caption not sent:", latest);
-          }
+          };
+          sendCaption();
         }
       };
 
@@ -500,6 +541,13 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
           // Recognition will auto-restart via onend handler
           return;
         }
+        // "audio-capture" means mic is in use - try again after a delay
+        if (errorType === "audio-capture") {
+          console.warn("Speech recognition audio-capture error - microphone may be in use, will retry on next end");
+          // Don't stop recognition - let it end naturally and restart
+          // The onend handler will restart it
+          return;
+        }
         // For other errors (like "not-allowed", "service-not-allowed"), stop recognition
         console.error("Speech recognition error:", errorType);
         stopRecognition();
@@ -508,30 +556,106 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
       recognition.onend = () => {
         // Restart automatically while connected for robustness.
         if (phase === "connected" && recognitionRef.current === recognition) {
-          // Small delay before restarting to avoid rapid restarts
+          // Longer delay before restarting to give microphone time to be available
+          // This helps with audio-capture errors
           setTimeout(() => {
             if (phase === "connected" && recognitionRef.current === recognition) {
               try {
-                recognition.start();
+                // Verify microphone is still available before restarting
+                const audioTracks = localStreamRef.current?.getAudioTracks();
+                if (audioTracks && audioTracks.length > 0 && audioTracks[0].readyState === "live") {
+                  recognition.start();
+                } else {
+                  console.warn("Microphone not available, delaying recognition restart...");
+                  // Try again after a longer delay
+                  setTimeout(() => {
+                    if (phase === "connected" && recognitionRef.current === recognition) {
+                      try {
+                        recognition.start();
+                      } catch (err) {
+                        console.error("Failed to restart recognition after delay:", err);
+                        recognitionRef.current = null;
+                      }
+                    }
+                  }, 2000);
+                }
               } catch (err) {
                 console.error("Failed to restart recognition:", err);
                 recognitionRef.current = null;
               }
             }
-          }, 100);
+          }, 500);
         } else {
           recognitionRef.current = null;
         }
       };
 
-      try {
-        recognition.start();
-        recognitionRef.current = recognition;
-        console.log("Speech recognition started with language:", captionsLanguage);
-      } catch (err) {
-        console.error("Failed to start recognition:", err);
-        recognitionRef.current = null;
-      }
+      // Verify microphone is accessible before starting recognition
+      const verifyMicrophone = async () => {
+        try {
+          // Check if we have an active audio track
+          const audioTracks = localStreamRef.current?.getAudioTracks();
+          if (!audioTracks || audioTracks.length === 0) {
+            console.warn("No audio track available for speech recognition");
+            return false;
+          }
+          
+          const audioTrack = audioTracks[0];
+          if (audioTrack.readyState !== "live") {
+            console.warn("Audio track is not live:", audioTrack.readyState);
+            return false;
+          }
+          
+          console.log("Microphone verified - audio track is live");
+          return true;
+        } catch (err) {
+          console.error("Error verifying microphone:", err);
+          return false;
+        }
+      };
+
+      // Start recognition with a delay to ensure mic is ready
+      const startRecognitionWithDelay = async () => {
+        // Wait a bit longer to ensure microphone is fully available
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Check if still connected before starting
+        if (phase !== "connected" || recognitionRef.current) {
+          return;
+        }
+
+        const micReady = await verifyMicrophone();
+        if (!micReady) {
+          console.warn("Microphone not ready, will retry...");
+          // Try again after a longer delay
+          setTimeout(() => {
+            if (phase === "connected" && !recognitionRef.current) {
+              startRecognitionWithDelay();
+            }
+          }, 2000);
+          return;
+        }
+
+        try {
+          recognition.start();
+          recognitionRef.current = recognition;
+          console.log(`Speech recognition started (${roleRef.current}) with language:`, captionsLanguage);
+        } catch (err) {
+          console.error(`Failed to start recognition (${roleRef.current}):`, err);
+          // If it fails with audio-capture, try again after a delay
+          if (err instanceof Error && err.message.includes("audio")) {
+            setTimeout(() => {
+              if (phase === "connected" && !recognitionRef.current) {
+                startRecognitionWithDelay();
+              }
+            }, 2000);
+          } else {
+            recognitionRef.current = null;
+          }
+        }
+      };
+
+      startRecognitionWithDelay();
     } else {
       stopRecognition();
     }

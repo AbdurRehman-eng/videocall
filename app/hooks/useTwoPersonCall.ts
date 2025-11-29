@@ -132,7 +132,9 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      if (state === "disconnected" || state === "failed" || state === "closed") {
+      if (state === "connected" || state === "completed") {
+        setPhase("connected");
+      } else if (state === "disconnected" || state === "failed" || state === "closed") {
         setPhase("ended");
       }
     };
@@ -145,17 +147,17 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
     pcRef.current = pc;
 
-    // Data channel for captions: host will create it explicitly, guest will
-    // receive it via the ondatachannel handler below.
-    if (role === "host" && !dataChannelRef.current) {
-      const channel = pc.createDataChannel("captions");
-      dataChannelRef.current = channel;
-    }
+    // Data channel for captions: host will create it in createOffer(),
+    // guest will receive it via the ondatachannel handler below.
 
     pc.ondatachannel = (event) => {
       if (event.channel.label !== "captions") return;
       const channel = event.channel;
       dataChannelRef.current = channel;
+
+      channel.onopen = () => {
+        console.log("Data channel opened (guest)");
+      };
 
       channel.onmessage = (ev) => {
         try {
@@ -166,6 +168,10 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
         } catch {
           // ignore malformed messages
         }
+      };
+      
+      channel.onerror = (err) => {
+        console.error("Data channel error:", err);
       };
     };
 
@@ -238,9 +244,35 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
       return;
     }
 
+    // Prevent creating multiple offers
+    if (offerPayload) {
+      setError("Connection code already generated. Please use the existing code or refresh the page.");
+      return;
+    }
+
     try {
       setIsBusy(true);
       const pc = ensurePeerConnection();
+
+      // Check if we already have a local description
+      if (pc.localDescription) {
+        setError("Offer already created. Please use the existing connection code.");
+        return;
+      }
+
+      // Create data channel for captions if it doesn't exist
+      if (!dataChannelRef.current && role === "host") {
+        const channel = pc.createDataChannel("captions");
+        dataChannelRef.current = channel;
+        
+        channel.onopen = () => {
+          console.log("Data channel opened (host)");
+        };
+        
+        channel.onerror = (err) => {
+          console.error("Data channel error:", err);
+        };
+      }
 
       const localStream = localStreamRef.current;
       if (localStream) {
@@ -268,7 +300,7 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
     } finally {
       setIsBusy(false);
     }
-  }, [ensurePeerConnection, role]);
+  }, [ensurePeerConnection, role, offerPayload]);
 
   const applyRemoteOfferAndCreateAnswer = useCallback(
     async (remoteOffer: string) => {
@@ -280,6 +312,12 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
       try {
         setIsBusy(true);
         const pc = ensurePeerConnection();
+
+        // Check if we've already set a remote description
+        if (pc.remoteDescription) {
+          setError("Connection code already applied. Please wait or refresh the page.");
+          return;
+        }
 
         const offer: RTCSessionDescriptionInit = JSON.parse(remoteOffer);
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
@@ -294,9 +332,18 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
         }
 
         setPhase("waiting-answer");
+        
+        // Check if connection is already established (can happen quickly)
+        if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+          setPhase("connected");
+        }
       } catch (err) {
         console.error(err);
-        setError("The connection code looks invalid. Please check and try again.");
+        if (err instanceof Error && err.message.includes("InvalidStateError")) {
+          setError("Connection already in progress. Please refresh and try again.");
+        } else {
+          setError("The connection code looks invalid. Please check and try again.");
+        }
       } finally {
         setIsBusy(false);
       }
@@ -314,12 +361,48 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
       try {
         setIsBusy(true);
         const pc = ensurePeerConnection();
+        
+        // Check if we've already set a remote description
+        if (pc.remoteDescription) {
+          setError("Response code already applied. Connection should be active.");
+          // If already connected, just update phase
+          if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+            setPhase("connected");
+          }
+          return;
+        }
+
+        // Ensure we have a local description (offer) before setting remote answer
+        if (!pc.localDescription) {
+          setError("Please generate a connection code first.");
+          return;
+        }
+
         const answer: RTCSessionDescriptionInit = JSON.parse(remoteAnswer);
+        
+        // Check the signaling state - we should be in "have-local-offer" state
+        if (pc.signalingState !== "have-local-offer") {
+          setError(
+            `Invalid connection state: ${pc.signalingState}. Please generate a new connection code.`,
+          );
+          return;
+        }
+
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
         setPhase("connected");
       } catch (err) {
         console.error(err);
-        setError("The response code looks invalid. Please check and try again.");
+        if (err instanceof Error) {
+          if (err.message.includes("InvalidStateError") || err.message.includes("wrong state")) {
+            setError(
+              "Connection state error. Please generate a new connection code and try again.",
+            );
+          } else {
+            setError("The response code looks invalid. Please check and try again.");
+          }
+        } else {
+          setError("The response code looks invalid. Please check and try again.");
+        }
       } finally {
         setIsBusy(false);
       }
@@ -353,16 +436,23 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
   // Start / stop speech recognition when connected and supported.
   useEffect(() => {
     if (!captionsSupported || typeof window === "undefined") {
+      stopRecognition();
       return;
     }
 
     const SpeechRecognitionCtor =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
-    if (!SpeechRecognitionCtor) return;
+    if (!SpeechRecognitionCtor) {
+      stopRecognition();
+      return;
+    }
 
     if (phase === "connected") {
-      if (recognitionRef.current) return;
+      // Stop existing recognition if language changed or if already running
+      if (recognitionRef.current) {
+        stopRecognition();
+      }
 
       const recognition: SpeechRecognition = new SpeechRecognitionCtor();
       recognition.continuous = true;
@@ -381,35 +471,67 @@ export function useTwoPersonCall(): UseTwoPersonCallResult {
 
         // Send only finalized phrases to the remote side.
         const lastResult = event.results[event.results.length - 1];
-        if (lastResult && lastResult.isFinal && dataChannelRef.current) {
-          const payload: CaptionPayload = {
-            kind: "caption",
-            text: latest,
-            language: captionsLanguage,
-            timestamp: Date.now(),
-          };
-          try {
-            dataChannelRef.current.send(JSON.stringify(payload));
-          } catch {
-            // ignore transient send errors
+        if (lastResult && lastResult.isFinal) {
+          if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
+            const payload: CaptionPayload = {
+              kind: "caption",
+              text: latest,
+              language: captionsLanguage,
+              timestamp: Date.now(),
+            };
+            try {
+              dataChannelRef.current.send(JSON.stringify(payload));
+              console.log("Sent caption:", latest);
+            } catch (err) {
+              console.error("Failed to send caption:", err);
+            }
+          } else {
+            console.warn("Data channel not ready, caption not sent:", latest);
           }
         }
       };
 
-      recognition.onerror = () => {
-        // Do not crash the call if captions fail; simply stop.
+      recognition.onerror = (event) => {
+        const errorType = (event as any).error;
+        // "network" errors are often transient - don't stop recognition for them
+        // "no-speech" and "aborted" are also non-fatal
+        if (errorType === "network" || errorType === "no-speech" || errorType === "aborted") {
+          console.warn("Speech recognition transient error:", errorType);
+          // Recognition will auto-restart via onend handler
+          return;
+        }
+        // For other errors (like "not-allowed", "service-not-allowed"), stop recognition
+        console.error("Speech recognition error:", errorType);
         stopRecognition();
       };
 
       recognition.onend = () => {
         // Restart automatically while connected for robustness.
-        if (phase === "connected") {
+        if (phase === "connected" && recognitionRef.current === recognition) {
+          // Small delay before restarting to avoid rapid restarts
+          setTimeout(() => {
+            if (phase === "connected" && recognitionRef.current === recognition) {
+              try {
+                recognition.start();
+              } catch (err) {
+                console.error("Failed to restart recognition:", err);
+                recognitionRef.current = null;
+              }
+            }
+          }, 100);
+        } else {
           recognitionRef.current = null;
         }
       };
 
-      recognition.start();
-      recognitionRef.current = recognition;
+      try {
+        recognition.start();
+        recognitionRef.current = recognition;
+        console.log("Speech recognition started with language:", captionsLanguage);
+      } catch (err) {
+        console.error("Failed to start recognition:", err);
+        recognitionRef.current = null;
+      }
     } else {
       stopRecognition();
     }
